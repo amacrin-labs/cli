@@ -1,0 +1,48 @@
+[project]
+name = "amacrin"
+version = "0.0.1"
+description = "Amacrin CLI — deploy and manage OSA archives on the Amacrin cloud platform"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "Rory Byrne", email = "rory@rory.bio" }
+]
+requires-python = ">=3.13"
+keywords = ["scientific-data", "cloud", "deployment", "archive"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "httpx>=0.27",
+    "osa-py>=0.2.0",
+    "pyyaml>=6.0.3",
+    "typer>=0.23.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/amacrin-labs/cli"
+Repository = "https://github.com/amacrin-labs/cli"
+Issues = "https://github.com/amacrin-labs/cli/issues"
+
+[project.scripts]
+amacrin = "amacrin.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.1",
+    "ty>=0.0.17",
+]

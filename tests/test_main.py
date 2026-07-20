@@ -9,6 +9,7 @@ to stderr, so JSON assertions read ``result.stdout`` and parse it directly.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,19 @@ from amacrin.config import AmacrinError, read_state, write_state
 from amacrin.models import Archive, ArchiveCreated, Deployment, Me
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(output: str) -> str:
+    """Strip ANSI colour codes from CLI output.
+
+    Typer renders error panels through Rich, which colourises option names when
+    colour is enabled (as CI does) — splitting a literal like ``--convention``
+    across escape sequences. Assert against the de-styled text so substring
+    checks are stable regardless of the terminal/CI colour setting.
+    """
+    return _ANSI_RE.sub("", output)
 
 
 # -- fixtures / builders ----------------------------------------------------
@@ -431,4 +445,4 @@ class TestIngestStart:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["ingest", "start"])
         assert result.exit_code != 0
-        assert "--convention" in result.output
+        assert "--convention" in _plain(result.output)

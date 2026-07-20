@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from amacrin.interpolation import interpolate_yaml, parse_dotenv
+from amacrin.config import AmacrinError
+from amacrin.interpolation import (
+    ConfigInterpolationError,
+    interpolate_yaml,
+    parse_dotenv,
+)
 
 
 class TestInterpolateYaml:
@@ -15,9 +20,17 @@ class TestInterpolateYaml:
 
     def test_missing_var_raises_error(self) -> None:
         raw = "secret: ${MISSING_VAR}"
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(ConfigInterpolationError) as exc_info:
             interpolate_yaml(raw, {})
         assert "MISSING_VAR" in str(exc_info.value)
+
+    def test_error_is_amacrin_error_with_hint(self) -> None:
+        raw = "secret: ${MISSING_VAR}"
+        with pytest.raises(AmacrinError) as exc_info:
+            interpolate_yaml(raw, {})
+        assert isinstance(exc_info.value, AmacrinError)
+        assert exc_info.value.hint is not None
+        assert "MISSING_VAR" in exc_info.value.hint
 
     def test_multiple_missing_vars_single_error(self) -> None:
         raw = "a: ${VAR_A}\nb: ${VAR_B}"

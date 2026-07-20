@@ -11,9 +11,9 @@ OSA SDK's payload builder so the two never drift — **minus** the release block
 (the cloud fills `image`/`digest`/`source_ref` after building), **plus** the
 build-only fields the cloud needs and then strips before calling OSA: top-level
 `slug` (the convention's FR-017 supersession key) + `runtime_version` (the
-Dockerfile base), and each ingester's `name` (a build fan-out key OSA's ingester
-has no field for). Contract: the cloud repo's
-`docs/architecture/convention-publish.md`.
+Dockerfile base), and each ingester's `name`/`runner` (OSA's ingester has no such
+fields). The receiving-side contract lives in the cloud repo's
+`assemble_convention_body` + `Manifest` doc-comments.
 """
 
 from __future__ import annotations

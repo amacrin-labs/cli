@@ -16,6 +16,9 @@ ARCHIVE_STATUSES = ("deploying", "running", "stopped", "error", "destroying")
 DEPLOYMENT_STATUSES = ("pending", "in_progress", "succeeded", "failed")
 PERSONAL_ORGANISATION_NAME = "Personal"
 
+# Parent build lifecycle (`builds.status`); the success terminal is `published`.
+BUILD_TERMINAL_STATUSES = ("published", "build_failed", "publish_failed", "cancelled")
+
 
 class TokenResponse(BaseModel):
     """POST /auth/token and /auth/refresh response."""
@@ -96,3 +99,48 @@ class ArchiveCreated(BaseModel):
 
     archive: Archive
     deployment: Deployment
+
+
+class SubmitBuild(BaseModel):
+    """202 response of POST /archives/{id}/builds."""
+
+    build_id: str
+    status: str
+
+
+class ComponentBuild(BaseModel):
+    """One component's build sub-status within a Build."""
+
+    kind: str
+    name: str
+    status: str
+    image_ref: str | None = None
+    digest: str | None = None
+    source_ref: str
+    error_message: str | None = None
+
+
+class Build(BaseModel):
+    """GET /builds/{id}: parent build + per-component breakdown.
+
+    `status` is the single lifecycle field (queued|building|publishing|
+    published|build_failed|publish_failed|cancelled); publication errors (a
+    tenant 422) surface in `error_message`.
+    """
+
+    id: str
+    archive_id: str
+    convention_slug: str
+    status: str
+    error_message: str | None = None
+    cancelled_by: str | None = None
+    cancel_reason: str | None = None
+    convention_ref: str | None = None
+    components: list[ComponentBuild] = []
+    published_at: str | None = None
+    created_at: str
+    updated_at: str
+
+    @property
+    def finished(self) -> bool:
+        return self.status in BUILD_TERMINAL_STATUSES

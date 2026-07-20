@@ -168,21 +168,34 @@ def link(
 @app.command()
 def deploy(
     ctx: typer.Context,
+    local: Annotated[
+        bool,
+        typer.Option(
+            "--local",
+            help="Build images locally and register directly with the instance "
+            "(requires Docker + a registry). Default is server-side cloud build.",
+        ),
+    ] = False,
     registry: Annotated[
         Optional[str],
         typer.Option(
-            help="Container registry to push images to (e.g. ghcr.io/your-org).",
+            help="[--local only] Container registry to push images to "
+            "(e.g. ghcr.io/your-org).",
             envvar="OSA_REGISTRY",
         ),
     ] = None,
     skip_build: Annotated[
         bool,
         typer.Option(
-            "--skip-build", help="Skip image build/push, reuse last-pushed images."
+            "--skip-build",
+            help="[--local only] Skip image build/push, reuse last-pushed images.",
         ),
     ] = False,
 ) -> None:
-    """Build convention images and register them with the linked archive.
+    """Deploy the project's conventions to the linked archive.
+
+    By default the source is uploaded and built in the cloud (no local Docker
+    needed); `--local` builds images locally and registers them directly.
 
     Requires a linked archive — run `amacrin archive create` or
     `amacrin link --archive <id>` first.
@@ -202,6 +215,7 @@ def deploy(
             project_dir=Path.cwd(),
             registry=registry,
             skip_build=skip_build,
+            local=local,
             ui=ui,
         )
     except AmacrinError as e:

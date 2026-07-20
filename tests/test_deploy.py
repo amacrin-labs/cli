@@ -46,7 +46,9 @@ class TestDeployStrict:
         client.archive_status.assert_not_called()
         mock_osa_deploy.assert_not_called()
 
-    def test_errors_when_deployment_not_succeeded(self, tmp_path: Path) -> None:
+    def test_local_errors_when_deployment_not_succeeded(self, tmp_path: Path) -> None:
+        # The `--local` path registers directly with the instance, so it needs a
+        # succeeded deployment with a URL (the cloud path only needs `running`).
         write_state("archive-id", "arch_123", project_dir=tmp_path)
         client = _mock_client(_deployment(status="in_progress", url=None))
         with (
@@ -54,21 +56,28 @@ class TestDeployStrict:
             patch("osa.cli.deploy.deploy") as mock_osa_deploy,
         ):
             with pytest.raises(AmacrinError) as exc_info:
-                deploy(project_dir=tmp_path)
+                deploy(project_dir=tmp_path, local=True)
         assert "not ready" in str(exc_info.value)
         assert exc_info.value.hint == "Run `amacrin archive status` to watch progress"
         mock_osa_deploy.assert_not_called()
 
-    def test_delegates_to_osa_with_resolved_url_and_fresh_token(
+    def test_local_delegates_to_osa_with_resolved_url_and_fresh_token(
         self, tmp_path: Path
     ) -> None:
         write_state("archive-id", "arch_123", project_dir=tmp_path)
         client = _mock_client(_deployment())
+        sentinel_ui = object()
         with (
             patch("amacrin.deploy.AmacrinClient", return_value=client),
             patch("osa.cli.deploy.deploy", return_value={"ok": True}) as mock_osa,
         ):
-            result = deploy(project_dir=tmp_path, registry="ghcr.io/x", skip_build=True)
+            result = deploy(
+                project_dir=tmp_path,
+                registry="ghcr.io/x",
+                skip_build=True,
+                local=True,
+                ui=sentinel_ui,
+            )
 
         assert result == {"ok": True}
         mock_osa.assert_called_once_with(
@@ -77,5 +86,5 @@ class TestDeployStrict:
             project_dir=tmp_path,
             registry="ghcr.io/x",
             skip_build=True,
-            ui=None,
+            ui=sentinel_ui,
         )

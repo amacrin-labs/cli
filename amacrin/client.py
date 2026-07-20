@@ -10,6 +10,7 @@ refresh token is never replayed.
 
 from __future__ import annotations
 
+import json as _json
 import os
 import time
 from collections.abc import Callable
@@ -23,9 +24,11 @@ from amacrin.credentials import _DEFAULT_PATH, read_credentials, write_credentia
 from amacrin.models import (
     Archive,
     ArchiveCreated,
+    Build,
     Deployment,
     Me,
     Organisation,
+    SubmitBuild,
 )
 
 DEFAULT_API_BASE = "https://api.amacrin.com/api/v1"
@@ -121,13 +124,19 @@ class AmacrinClient:
         *,
         json: Any | None = None,
         params: dict[str, str] | None = None,
+        files: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
     ) -> httpx.Response:
-        resp = self._send(method, path, json=json, params=params)
+        resp = self._send(
+            method, path, json=json, params=params, files=files, data=data
+        )
         if resp.status_code == 401:
             body = _safe_json(resp)
             if body.get("reason") == "expired":
                 self._refresh()
-                resp = self._send(method, path, json=json, params=params)
+                resp = self._send(
+                    method, path, json=json, params=params, files=files, data=data
+                )
             else:
                 raise AmacrinError(
                     "Not authenticated"
@@ -147,14 +156,22 @@ class AmacrinClient:
         *,
         json: Any | None = None,
         params: dict[str, str] | None = None,
+        files: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
     ) -> httpx.Response:
         headers = {"Authorization": f"Bearer {self._access_token()}"}
+        # `files`/`data` drive a multipart/form-data body (the build upload);
+        # httpx sets the boundary + content-type. `json` and multipart are
+        # mutually exclusive. The tarball is bytes (not a stream), so a refresh
+        # retry can safely re-send it.
         try:
             return self._http.request(
                 method,
                 f"{self.api_base}{path}",
                 json=json,
                 params=params,
+                files=files,
+                data=data,
                 headers=headers,
             )
         except httpx.HTTPError as exc:
@@ -248,6 +265,57 @@ class AmacrinClient:
             "POST", f"/archives/{archive_id}/deploy", json={"config": {}}
         )
         return Deployment.model_validate(resp.json())
+
+    # -- server-side convention build/deploy --------------------------------
+
+    def submit_build(
+        self, archive_id: str, manifest: dict[str, Any], tarball: bytes
+    ) -> SubmitBuild:
+        """POST /archives/{id}/builds (multipart) → 202 {build_id, status}.
+
+        `manifest` is a JSON form field, `tarball` the gzipped source bundle.
+        """
+        resp = self._request(
+            "POST",
+            f"/archives/{archive_id}/builds",
+            data={"manifest": _json.dumps(manifest)},
+            files={"tarball": ("source.tar.gz", tarball, "application/gzip")},
+        )
+        return SubmitBuild.model_validate(resp.json())
+
+    def get_build(self, build_id: str) -> Build:
+        """GET /builds/{id}: parent status + per-component breakdown."""
+        return Build.model_validate(self._request("GET", f"/builds/{build_id}").json())
+
+    def wait_for_build(
+        self,
+        build_id: str,
+        *,
+        timeout: float = 1800.0,
+        interval: float = 5.0,
+        on_status: Callable[[Build], None] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> Build:
+        """Poll a build until it reaches a terminal status, then return it.
+
+        Returns the terminal `Build` for *any* outcome (published or a failure)
+        so the caller can render per-component detail — unlike deployment
+        polling, this does not raise on a failed build. Raises only on timeout.
+        """
+        deadline = clock() + timeout
+        while True:
+            build = self.get_build(build_id)
+            if on_status is not None:
+                on_status(build)
+            if build.finished:
+                return build
+            if clock() >= deadline:
+                raise AmacrinError(
+                    "Timed out waiting for the build to finish",
+                    hint="Run `amacrin deploy` again or check back later",
+                )
+            sleep(interval)
 
     def destroy_archive(self, archive_id: str, *, force: bool = False) -> Archive:
         params = {"force": "true"} if force else None

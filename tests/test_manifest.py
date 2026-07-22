@@ -3,47 +3,20 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tarfile
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
 
-# Imported at module level so hook annotations resolve via the function's
-# __globals__ (osa introspects hooks with typing.get_type_hints).
-from osa.types.record import Record
-from osa.types.schema import MetadataSchema
-
+from amacrin import manifest as manifest_mod
 from amacrin.config import AmacrinError
 from amacrin.manifest import (
-    _release_less,
     build_cloud_manifests,
     build_source_tarball,
     runtime_version,
     slugify,
 )
-
-
-class SampleSchema(MetadataSchema):
-    __schema_id__ = "sample-schema-1"
-
-    organism: str
-
-
-class _Pocket(BaseModel):
-    pocket_id: str
-    score: float
-
-
-@pytest.fixture(autouse=True)
-def _clean_registry() -> None:
-    """The osa convention registry is global — reset it around each test."""
-    from osa._registry import clear
-
-    clear()
-    yield
-    clear()
-
 
 # ---- slugify --------------------------------------------------------------
 
@@ -73,40 +46,6 @@ def test_runtime_version_reads_requires_python(tmp_path: Path) -> None:
     assert runtime_version(tmp_path) == "3.12"
 
 
-# ---- _release_less --------------------------------------------------------
-
-
-def test_release_less_strips_cloud_filled_fields() -> None:
-    payload = {
-        "hooks": [
-            {
-                "name": "h",
-                "feature": {"kind": "table"},
-                "release": {
-                    "image": "img",
-                    "digest": "sha256:x",
-                    "source_ref": "s",
-                    "config": {"k": "v"},
-                    "limits": {"cpu": "0.5"},
-                },
-            }
-        ],
-        "ingester": {
-            "image": "img",
-            "digest": "sha256:x",
-            "runner": "oci",
-            "config": {},
-            "schedule": {"cron": "0 0 * * *"},
-        },
-    }
-    _release_less(payload)
-    rel = payload["hooks"][0]["release"]
-    assert set(rel) == {"config", "limits"}, "cloud fills image/digest/source_ref"
-    ing = payload["ingester"]
-    assert "image" not in ing and "digest" not in ing and "runner" not in ing
-    assert ing["schedule"] == {"cron": "0 0 * * *"}  # client scheduling preserved
-
-
 # ---- build_source_tarball -------------------------------------------------
 
 
@@ -130,104 +69,88 @@ def test_tarball_includes_source_and_excludes_junk(tmp_path: Path) -> None:
     assert not any(n.endswith(".pyc") for n in names)
 
 
-# ---- build_cloud_manifests (real convention via the osa SDK) --------------
+# ---- build_cloud_manifests (osa manifest via subprocess, stubbed) ---------
+
+# A release-less `osa manifest` payload — the shape `osa manifest` emits.
+_OSA_MANIFEST_DOC = {
+    "manifest_version": 1,
+    "conventions": [
+        {
+            "title": "Protein Structures",
+            "description": "Curated protein structures",
+            "schema": {"id": "sample-schema-1", "version": "1.0.0", "fields": []},
+            "file_requirements": {"accepted_types": [".cif"], "min_count": 0},
+            # New symmetric shape (as `osa manifest --exclude_none` emits it):
+            # config/limits authored on the component; no `release` pre-build.
+            "hooks": [
+                {
+                    "name": "detect",
+                    "feature": {"kind": "table", "cardinality": "many", "columns": []},
+                    "config": {},
+                    "limits": {},
+                }
+            ],
+            "ingester": {
+                "name": "rcsb",
+                "config": {},
+                "limits": {},
+            },
+            "docs": {
+                "purpose": "Answer questions about protein structures.",
+                "example_questions": ["q1?", "q2?", "q3?"],
+                "examples": [
+                    {"question": "q1?", "query": "GET /x", "interpretation": "means x"}
+                ],
+            },
+        }
+    ],
+}
 
 
-def _register_convention(*, with_ingester: bool = False) -> None:
-    from osa import Example
-    from osa.authoring.convention import convention
-    from osa.authoring.hook import hook
-
-    @hook
-    def detect(record: Record[SampleSchema]) -> list[_Pocket]:
-        return []
-
-    kwargs: dict = {}
-    if with_ingester:
-
-        class MyIngester:
-            name = "rcsb"
-
-            class RuntimeConfig(BaseModel):
-                api_key: str = ""
-
-            async def pull(self, **_: object):  # pragma: no cover - not run
-                yield
-
-        kwargs["ingester"] = MyIngester
-
-    convention(
-        title="Protein Structures",
-        description="Curated protein structures",
-        version="1.0.0",
-        schema=SampleSchema,
-        files={"accepted_types": [".cif"]},
-        hooks=[detect],
-        purpose="Answer questions about protein structures.",
-        example_questions=["q1?", "q2?", "q3?"],
-        examples=[Example(question="q1?", query="GET /x", interpretation="means x")],
-        **kwargs,
+def test_build_cloud_manifests_layers_cloud_fields(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        manifest_mod, "_run_osa_manifest", lambda _pd: _OSA_MANIFEST_DOC
     )
 
-
-def test_build_cloud_manifests_has_osa_body_plus_build_fields(tmp_path: Path) -> None:
-    _register_convention()
     manifests = build_cloud_manifests(tmp_path)
     assert len(manifests) == 1
     title, m = manifests[0]
     assert title == "Protein Structures"
 
-    # Build-only fields the cloud consumes then strips.
+    # amacrin's cloud-only fields, layered onto the osa body.
     assert m["slug"] == "protein-structures"
     assert m["runtime_version"] == "3.13"
 
-    # OSA body carried through (docs = SKILL.md source, mandatory).
+    # osa body carried through untouched: docs, file reqs, release-less
+    # components with config/limits authored on them (no nested release yet).
     assert m["title"] == "Protein Structures"
-    assert m["description"] == "Curated protein structures"
     assert m["docs"]["purpose"].startswith("Answer questions")
-    assert len(m["docs"]["examples"]) == 1
     assert m["file_requirements"]["accepted_types"] == [".cif"]
-
-    # Hook: feature present; release is release-LESS (cloud fills image/digest).
     hook = m["hooks"][0]
-    assert hook["name"] == "detect"
-    assert hook["feature"]["kind"] == "table"
-    assert "image" not in hook["release"] and "digest" not in hook["release"]
-    assert "config" in hook["release"]
+    assert hook["config"] == {} and "limits" in hook
+    assert "release" not in hook
+    assert m["ingester"]["name"] == "rcsb"
+    assert "release" not in m["ingester"] and "image" not in m["ingester"]
 
 
-def test_build_cloud_manifests_ingester_has_name_no_image(tmp_path: Path) -> None:
-    _register_convention(with_ingester=True)
-    _title, m = build_cloud_manifests(tmp_path)[0]
-    ing = m["ingester"]
-    # Build-only fan-out key present; cloud-filled fields absent.
-    assert ing["name"] == "rcsb"
-    assert "image" not in ing and "digest" not in ing and "runner" not in ing
-
-
-def test_build_cloud_manifests_runs_docs_gate(tmp_path: Path) -> None:
-    from osa import Example
-    from osa.authoring.convention import convention
-    from osa.authoring.hook import hook
-
-    @hook
-    def detect(record: Record[SampleSchema]) -> list[_Pocket]:
-        return []
-
-    # Only one distinct trigger question — below OSA's mandatory minimum of 3.
-    # (The gate may fire at convention() authoring or at build_cloud_manifests;
-    # either way the deploy is blocked before any upload.)
-    with pytest.raises(Exception) as exc:
-        convention(
-            title="Thin Docs",
-            description="d",
-            version="1.0.0",
-            schema=SampleSchema,
-            files={"accepted_types": [".cif"]},
-            hooks=[detect],
-            purpose="p",
-            example_questions=["only one?"],
-            examples=[Example(question="only one?", query="q", interpretation="i")],
-        )
+def test_build_cloud_manifests_rejects_unknown_version(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        manifest_mod,
+        "_run_osa_manifest",
+        lambda _pd: {"manifest_version": 2, "conventions": []},
+    )
+    with pytest.raises(AmacrinError, match="version"):
         build_cloud_manifests(tmp_path)
-    assert "trigger" in str(exc.value).lower() or "docs" in str(exc.value).lower()
+
+
+def test_run_osa_manifest_surfaces_subprocess_failure(tmp_path, monkeypatch) -> None:
+    def _fail(cmd, **_kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="deploy blocked: fewer than 3 trigger questions"
+        )
+
+    monkeypatch.setattr(manifest_mod.subprocess, "run", _fail)
+    with pytest.raises(AmacrinError) as exc:
+        manifest_mod._run_osa_manifest(tmp_path)
+    assert "manifest" in str(exc.value).lower()
+    assert exc.value.cause and "trigger questions" in exc.value.cause

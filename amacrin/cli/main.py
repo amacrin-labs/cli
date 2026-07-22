@@ -200,15 +200,19 @@ def deploy(
     Requires a linked archive — run `amacrin archive create` or
     `amacrin link --archive <id>` first.
     """
-    import importlib
-    import importlib.metadata
-
     from amacrin.deploy import deploy as do_deploy
 
     ui = _ui(ctx)
 
-    for ep in importlib.metadata.entry_points(group="osa.conventions"):
-        importlib.import_module(ep.value)
+    # The --local path builds/registers in this interpreter, so its conventions
+    # must be imported here. The cloud path builds the manifest in the project's
+    # own environment via `uv run osa manifest`, so it discovers them there.
+    if local:
+        import importlib
+        import importlib.metadata
+
+        for ep in importlib.metadata.entry_points(group="osa.conventions"):
+            importlib.import_module(ep.value)
 
     try:
         result = do_deploy(

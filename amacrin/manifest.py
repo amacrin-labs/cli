@@ -5,21 +5,23 @@ deploy` uploads a **source tarball** plus a **cloud manifest** describing the
 convention — instead of building images locally and POSTing to the OSA instance
 directly (the `--local` path).
 
-The cloud manifest is OSA's `DeployConvention` body (title, description,
-file_requirements, schema, docs, hooks, ingester) — reused verbatim from the
-OSA SDK's payload builder so the two never drift — **minus** the release blocks
-(the cloud fills `image`/`digest`/`source_ref` after building), **plus** the
-build-only fields the cloud needs and then strips before calling OSA: top-level
+The manifest is produced by running `osa manifest` in the **project's own
+environment** (via `uv run`), because amacrin is typically an isolated tool that
+does not have the convention package installed — so it cannot import the
+convention itself. `osa manifest` emits each convention's release-less
+`DeployConvention` body (the cloud fills `image`/`digest`/`source_ref` after
+building). amacrin then layers on the two cloud-only fields it owns: top-level
 `slug` (the convention's FR-017 supersession key) + `runtime_version` (the
-Dockerfile base), and each ingester's `name`/`runner` (OSA's ingester has no such
-fields). The receiving-side contract lives in the cloud repo's
+Dockerfile base). The receiving-side contract lives in the cloud repo's
 `assemble_convention_body` + `Manifest` doc-comments.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import re
+import subprocess
 import tarfile
 import tomllib
 from pathlib import Path
@@ -82,74 +84,63 @@ def runtime_version(project_dir: Path) -> str:
     return match.group(1) if match else _DEFAULT_RUNTIME_VERSION
 
 
-def _release_less(payload: dict[str, Any]) -> None:
-    """Strip the release fields the cloud fills in, in place.
+def _run_osa_manifest(project_dir: Path) -> dict[str, Any]:
+    """Return the parsed `osa manifest` output, run in the project's own env.
 
-    Hooks keep `release.config`/`limits` (client-authored, forwarded to OSA);
-    the cloud injects `image`/`digest`/`source_ref`. The ingester keeps its
-    scheduling/config; the cloud injects `image`/`digest` (no `runner`, which
-    OSA rejects).
+    Uses `uv run osa manifest` when the project is a uv workspace (so the
+    convention's editable install and its deps resolve), else falls back to
+    `osa manifest` on PATH. amacrin is usually an isolated tool without the
+    convention installed, so this subprocess is how we cross that boundary.
     """
-    for hook in payload.get("hooks") or []:
-        release = hook.get("release")
-        if isinstance(release, dict):
-            for k in ("image", "digest", "source_ref"):
-                release.pop(k, None)
-    ingester = payload.get("ingester")
-    if isinstance(ingester, dict):
-        for k in ("image", "digest", "runner", "source_ref"):
-            ingester.pop(k, None)
+    cmd = (
+        ["uv", "run", "osa", "manifest"]
+        if (project_dir / "uv.lock").is_file()
+        else ["osa", "manifest"]
+    )
+    try:
+        proc = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise AmacrinError(
+            f"Could not run `{cmd[0]}`",
+            hint="Install uv (or put osa on PATH) in the project environment",
+        ) from e
+    if proc.returncode != 0:
+        raise AmacrinError(
+            "Failed to build the convention manifest",
+            cause=(proc.stderr or proc.stdout or "").strip() or None,
+            hint="Ensure the convention is installed and osa-py>=0.7.0 (which "
+            "provides `osa manifest`) is in the project environment",
+        )
+    try:
+        doc = json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        raise AmacrinError(
+            "`osa manifest` did not return valid JSON",
+            cause=(proc.stdout or "")[:500].strip() or None,
+        ) from e
+    return doc
 
 
 def build_cloud_manifests(project_dir: Path) -> list[tuple[str, dict[str, Any]]]:
     """One `(title, cloud-manifest)` per registered convention.
 
-    Reuses the OSA SDK's payload builder (so the OSA-body portion never drifts
-    from `osa deploy`), then makes it release-less and adds the build-only
-    fields. Convention modules must already be imported (registered) — the
-    caller loads them via the `osa.conventions` entry points.
+    Gets each convention's release-less body from `osa manifest` (run in the
+    project env), then layers on the two cloud-only fields amacrin owns: `slug`
+    and `runtime_version`.
     """
-    # Imported here so a missing/old osa-py surfaces at call time, not import.
-    from osa._registry import _conventions, _hooks
-    from osa.cli.deploy import (
-        _check_docs_gate,
-        _convention_to_payload,
-        _hook_to_definition,
-    )
-
-    if not _conventions:
+    doc = _run_osa_manifest(project_dir)
+    if doc.get("manifest_version") != 1:
         raise AmacrinError(
-            "No conventions registered",
-            hint="Ensure the convention package is installed and exposes an "
-            "`osa.conventions` entry point",
+            f"Unsupported osa manifest version: {doc.get('manifest_version')!r}",
+            hint="Upgrade osa-py in your convention project",
         )
 
-    # Mandatory-docs pre-flight (mirror of OSA's server-side gate) for fast
-    # local feedback before we build a tarball or hit the network. OSA remains
-    # the enforcing authority (a violation is a 422 at publish time).
-    _check_docs_gate(_conventions)
-
-    hooks_by_name = {h.name: h for h in _hooks}
+    version = runtime_version(project_dir)
     manifests: list[tuple[str, dict[str, Any]]] = []
-    for conv in _conventions:
-        # Release-less hook definitions: real feature/columns, placeholder
-        # image/digest that `_release_less` then drops.
-        hook_defs = [
-            _hook_to_definition(hooks_by_name[h.__name__], "", "", "")
-            for h in conv.hooks
-            if h.__name__ in hooks_by_name
-        ]
-        ingester_placeholder = ("", "") if conv.ingester_info is not None else None
-        payload = _convention_to_payload(conv, hook_defs, ingester_placeholder)
-
-        _release_less(payload)
-        payload["slug"] = slugify(conv.title)
-        payload["runtime_version"] = runtime_version(project_dir)
-        # OSA's ingester has no `name`; the cloud needs it to fan out the build.
-        if conv.ingester_info is not None and isinstance(payload.get("ingester"), dict):
-            payload["ingester"]["name"] = conv.ingester_info.name
-
-        manifests.append((conv.title, payload))
+    for payload in doc.get("conventions", []):
+        payload["slug"] = slugify(payload["title"])
+        payload["runtime_version"] = version
+        manifests.append((payload["title"], payload))
     return manifests
 
 

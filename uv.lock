@@ -9,6 +9,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "osa-py" },
+    { name = "pydantic" },
     { name = "pyyaml" },
     { name = "typer" },
 ]
@@ -23,7 +24,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "osa-py", specifier = ">=0.2.0" },
+    { name = "osa-py", specifier = ">=0.6.0" },
+    { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "typer", specifier = ">=0.23.1" },
 ]
@@ -161,17 +163,18 @@ wheels = [
 
 [[package]]
 name = "osa-py"
-version = "0.2.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/be/63/823cbb196491c748ba735414f4914afa21bdbffaa56fb2b131aee05e9215/osa_py-0.2.0.tar.gz", hash = "sha256:44d8b325f970ab9dbac2aa6b302eb0b41459c8f9402eb96ef73729d5b4d2aa24", size = 63829, upload-time = "2026-05-30T14:33:03.798Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/8a/76c96d52337395e2b58fe291a9e077fe59a0e923ee55d2774222fed933d3/osa_py-0.6.0.tar.gz", hash = "sha256:9bdddabe0e5eb603f034db67ae3c28665d5c36ccf6dba45e5ed8e8265eb23b67", size = 98316, upload-time = "2026-07-20T11:09:51.707Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/06/123b026c54624c0a05e12104a515b29a63838e6627e17f18c614dc6f89a1/osa_py-0.2.0-py3-none-any.whl", hash = "sha256:d17d5fabe8a261adef6f7725f34b7c4f0dfc62891c52788fa1fe47ac67986c13", size = 39124, upload-time = "2026-05-30T14:33:02.763Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/4a/cfbc3b9d0b44a0ce7497a8780c0b945c94c9f61870a6411a25dbd6361242/osa_py-0.6.0-py3-none-any.whl", hash = "sha256:996adeafbb347aa5e93aa04c2d3ef2a0d3ca25b41e77e7fe1b54bd7b661f00c5", size = 63588, upload-time = "2026-07-20T11:09:50.383Z" },
 ]
 
 [[package]]

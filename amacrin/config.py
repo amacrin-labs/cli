@@ -1,17 +1,44 @@
-"""Project-local state for Amacrin CLI.
+"""Project-local state and config loading for the Amacrin CLI.
 
 Reads and writes state files in `.amacrin/` within the project directory.
-State includes admin token, account ID, and archive ID.
+Project-local state is just the archive ID — user-scoped auth lives in the
+global credential store (`~/.config/amacrin/`), not here.
+
+Also loads the OSA config (`osa.yaml`) with ${VAR} interpolation from `.env`
+and the environment.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 class AmacrinError(Exception):
-    """Raised when an Amacrin operation fails."""
+    """Raised when an Amacrin operation fails.
+
+    Carries optional context for the CLI error renderer: a `cause` (captured
+    detail such as an API response body), a `hint` (remediation the user can
+    act on), and the API `request_id` when one was returned.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cause: str | None = None,
+        hint: str | None = None,
+        request_id: str | None = None,
+        status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.cause = cause
+        self.hint = hint
+        self.request_id = request_id
+        self.status = status
 
 
 def state_path(name: str, *, project_dir: Path) -> Path:
@@ -37,18 +64,6 @@ def delete_state(name: str, *, project_dir: Path) -> None:
     path.unlink(missing_ok=True)
 
 
-def require_token(*, project_dir: Path) -> str:
-    token = os.environ.get("AMACRIN_TOKEN")
-    if token:
-        return token
-    token = read_state("token", project_dir=project_dir)
-    if token:
-        return token
-    raise AmacrinError(
-        "No Amacrin token found. Set AMACRIN_TOKEN env var or run: amacrin login --token <token>"
-    )
-
-
 def require_archive_id(*, project_dir: Path) -> str:
     archive_id = read_state("archive-id", project_dir=project_dir)
     if archive_id:
@@ -59,10 +74,35 @@ def require_archive_id(*, project_dir: Path) -> str:
     )
 
 
-def require_account_id(*, project_dir: Path) -> str:
-    account_id = read_state("account-id", project_dir=project_dir)
-    if account_id:
-        return account_id
-    raise AmacrinError(
-        "No account ID found. Run `amacrin set-account --id <account-id>` first."
-    )
+def load_config(
+    config_path: Path | None = None, *, project_dir: Path
+) -> dict[str, Any]:
+    """Read and interpolate the OSA config (`osa.yaml`).
+
+    Resolves ${VAR} references against `.env` (in `project_dir`) and the
+    process environment, with the environment taking precedence. Defaults to
+    `project_dir/osa.yaml` when no path is given.
+    """
+    # Imported lazily to avoid a circular import: interpolation imports
+    # AmacrinError from this module for its error type.
+    from amacrin.interpolation import interpolate_yaml, parse_dotenv
+
+    if config_path is None:
+        config_path = project_dir / "osa.yaml"
+
+    if not config_path.exists():
+        raise AmacrinError(
+            f"No config file found at {config_path}",
+            hint="Create an osa.yaml or pass --config",
+        )
+
+    raw = config_path.read_text()
+
+    env: dict[str, str] = {}
+    dotenv_path = project_dir / ".env"
+    if dotenv_path.exists():
+        env.update(parse_dotenv(dotenv_path))
+    env.update(os.environ)
+
+    resolved = interpolate_yaml(raw, env)
+    return yaml.safe_load(resolved)

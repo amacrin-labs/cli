@@ -19,7 +19,8 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27",
-    "osa-py>=0.2.0",
+    "osa-py>=0.6.0",
+    "pydantic>=2.7",
     "pyyaml>=6.0.3",
     "typer>=0.23.1",
 ]

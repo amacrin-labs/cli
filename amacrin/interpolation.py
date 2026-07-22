@@ -9,10 +9,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from amacrin.config import AmacrinError
+
 _VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
-class ConfigInterpolationError(Exception):
+class ConfigInterpolationError(AmacrinError):
     """Raised when YAML interpolation fails due to unresolved variables."""
 
 
@@ -25,8 +27,8 @@ def interpolate_yaml(raw_yaml: str, env: dict[str, str]) -> str:
     if unresolved:
         vars_list = ", ".join(sorted(set(unresolved)))
         raise ConfigInterpolationError(
-            f"Unresolved variable(s) in config: {vars_list}. "
-            "Set them as environment variables or in your .env file."
+            f"Unresolved variable(s) in config: {vars_list}.",
+            hint=f"Define them in .env or the environment: {vars_list}",
         )
 
     return _VAR_PATTERN.sub(lambda m: env[m.group(1)], raw_yaml)

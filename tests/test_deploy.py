@@ -5,57 +5,86 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
 
 from amacrin.config import AmacrinError, write_state
 from amacrin.deploy import deploy
+from amacrin.models import Deployment
 
 
-def _mock_response(
-    status_code: int = 200, json_data: dict | list | None = None
-) -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.status_code = status_code
-    resp.json.return_value = json_data or {}
-    resp.raise_for_status = MagicMock()
-    return resp
+def _deployment(
+    status: str = "succeeded", url: str | None = "https://slug.amacr.in"
+) -> Deployment:
+    return Deployment(
+        id="deploy_1",
+        archive_id="arch_123",
+        provider="fly",
+        status=status,
+        url=url,
+        started_at="2026-07-20T00:00:00Z",
+    )
+
+
+def _mock_client(deployment: Deployment) -> MagicMock:
+    client = MagicMock()
+    client.archive_status.return_value = deployment
+    client.fresh_access_token.return_value = "fresh-at"
+    return client
 
 
 class TestDeployStrict:
     """Deploy resolves an existing archive and never provisions one."""
 
-    def test_errors_when_no_archive_linked(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("AMACRIN_TOKEN", "tok")
+    def test_errors_when_no_archive_linked(self, tmp_path: Path) -> None:
+        client = _mock_client(_deployment())
         with (
-            patch("amacrin.api.httpx.get") as mock_get,
+            patch("amacrin.deploy.AmacrinClient", return_value=client),
             patch("osa.cli.deploy.deploy") as mock_osa_deploy,
         ):
             with pytest.raises(AmacrinError, match="No archive linked"):
                 deploy(project_dir=tmp_path)
-        mock_get.assert_not_called()
+        client.archive_status.assert_not_called()
         mock_osa_deploy.assert_not_called()
 
-    def test_delegates_to_osa_with_resolved_url(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("AMACRIN_TOKEN", "tok")
+    def test_local_errors_when_deployment_not_succeeded(self, tmp_path: Path) -> None:
+        # The `--local` path registers directly with the instance, so it needs a
+        # succeeded deployment with a URL (the cloud path only needs `running`).
         write_state("archive-id", "arch_123", project_dir=tmp_path)
-        status_resp = _mock_response(json_data={"url": "https://arch.amacr.in"})
-
+        client = _mock_client(_deployment(status="in_progress", url=None))
         with (
-            patch("amacrin.api.httpx.get", return_value=status_resp),
+            patch("amacrin.deploy.AmacrinClient", return_value=client),
+            patch("osa.cli.deploy.deploy") as mock_osa_deploy,
+        ):
+            with pytest.raises(AmacrinError) as exc_info:
+                deploy(project_dir=tmp_path, local=True)
+        assert "not ready" in str(exc_info.value)
+        assert exc_info.value.hint == "Run `amacrin archive status` to watch progress"
+        mock_osa_deploy.assert_not_called()
+
+    def test_local_delegates_to_osa_with_resolved_url_and_fresh_token(
+        self, tmp_path: Path
+    ) -> None:
+        write_state("archive-id", "arch_123", project_dir=tmp_path)
+        client = _mock_client(_deployment())
+        sentinel_ui = object()
+        with (
+            patch("amacrin.deploy.AmacrinClient", return_value=client),
             patch("osa.cli.deploy.deploy", return_value={"ok": True}) as mock_osa,
         ):
-            result = deploy(project_dir=tmp_path, registry="ghcr.io/x", skip_build=True)
+            result = deploy(
+                project_dir=tmp_path,
+                registry="ghcr.io/x",
+                skip_build=True,
+                local=True,
+                ui=sentinel_ui,
+            )
 
         assert result == {"ok": True}
         mock_osa.assert_called_once_with(
-            server="https://arch.amacr.in",
-            token="tok",
+            server="https://slug.amacr.in",
+            token="fresh-at",
             project_dir=tmp_path,
             registry="ghcr.io/x",
             skip_build=True,
+            ui=sentinel_ui,
         )

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import typer
 
+from amacrin.cli.ui import UI
 from amacrin.client import AmacrinClient
-from amacrin.config import AmacrinError
+from amacrin.config import AmacrinError, load_config
+from amacrin.deploy_manifest import load_deploy_manifest
 from amacrin.models import ArchiveCreated, Deployment
+from amacrin.scaffold import save_manifest
+from amacrin.slug import slugify, validate_archive_slug
 
 archive_app = typer.Typer(help="Manage Amacrin archives (the cloud resource).")
 
@@ -22,28 +27,46 @@ def archive_create(
     config: Annotated[
         Optional[Path], typer.Option(help="Path to osa.yaml (defaults to ./osa.yaml).")
     ] = None,
+    slug: Annotated[
+        Optional[str],
+        typer.Option(help="Archive slug — <slug>.amacr.in; overrides amacrin.yaml."),
+    ] = None,
     org: Annotated[
         Optional[str],
         typer.Option(help="Organisation ID to own the archive (else auto-resolved)."),
     ] = None,
 ) -> None:
-    """Provision a new archive from osa.yaml and wait for it to come up."""
+    """Provision a new archive and wait for it to come up.
+
+    Deploy identity (slug, org) comes from ``amacrin.yaml``; the server config
+    (name, auth) from ``osa.yaml``. With no ``amacrin.yaml`` and no ``--slug``,
+    you are prompted for a slug (a slug of the archive name is proposed).
+    """
     from amacrin.cli.main import _json_output, _ui
-    from amacrin.config import load_config, write_state
+    from amacrin.config import write_state
 
     ui = _ui(ctx)
     json_output = _json_output(ctx)
     cwd = Path.cwd()
     client = AmacrinClient()
+    interactive = sys.stdin.isatty()
 
     created: ArchiveCreated
     deployment: Deployment
     try:
-        cfg = load_config(config, project_dir=cwd)
-        payload = _build_create_payload(cfg)
-        # Prompt for the org (if needed) *before* opening any task/spinner.
-        org_id = _resolve_org_id(client, org=org)
-        created = client.create_archive(org_id, payload)
+        # Resolve inputs (may prompt) *before* opening any task/spinner — the UI
+        # forbids interactive prompts while a task is live.
+        inputs = _resolve_create_inputs(
+            cwd, config=config, slug=slug, org=org, interactive=interactive, ui=ui
+        )
+        if inputs.prompted_slug and _offer_to_save(ui, interactive=interactive):
+            saved = save_manifest(cwd, slug=inputs.slug, org=inputs.org)
+            if saved.written and not json_output:
+                ui.info(f"Wrote {saved.path.name}")
+        org_id = _resolve_org_id(client, org=inputs.org)
+        created = client.create_archive(
+            org_id, {"name": inputs.name, "slug": inputs.slug, "auth": inputs.auth}
+        )
         write_state("archive-id", created.archive.id, project_dir=cwd)
         if not json_output:
             ui.info(
@@ -69,21 +92,76 @@ def archive_create(
         )
 
 
-def _build_create_payload(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Extract exactly the fields the create endpoint accepts from osa.yaml."""
-    name = cfg.get("name")
-    slug = cfg.get("slug")
+@dataclass(frozen=True)
+class CreateInputs:
+    """Resolved inputs for a create call: server config + deploy identity."""
+
+    name: str
+    auth: Any
+    slug: str
+    org: str | None
+    prompted_slug: bool  # slug was entered interactively → offer to persist it
+
+
+def _resolve_create_inputs(
+    project_dir: Path,
+    *,
+    config: Path | None,
+    slug: str | None,
+    org: str | None,
+    interactive: bool,
+    ui: UI,
+) -> CreateInputs:
+    """Combine ``amacrin.yaml`` (deploy identity) with ``osa.yaml`` (server
+    config) into the create payload, prompting for a slug only when neither a
+    manifest nor ``--slug`` supplied one.
+
+    Precedence for slug/org: explicit flag > ``amacrin.yaml`` > interactive prompt.
+    """
+    manifest = load_deploy_manifest(project_dir)
+    server_cfg = load_config(
+        config or (manifest.config if manifest else None), project_dir=project_dir
+    )
+
+    name = server_cfg.get("name")
     if not name:
         raise AmacrinError(
             "osa.yaml is missing `name`",
             hint="Add a top-level `name:` field to osa.yaml",
         )
-    if not slug:
-        raise AmacrinError(
-            "osa.yaml is missing `slug`",
-            hint="Add a top-level `slug:` field to osa.yaml",
+    if "slug" in server_cfg:
+        ui.warn(
+            "`slug` in osa.yaml is ignored — deploy identity belongs in amacrin.yaml"
         )
-    return {"name": name, "slug": slug, "auth": cfg.get("auth")}
+
+    resolved_slug = slug or (manifest.slug if manifest else None)
+    prompted = False
+    if resolved_slug is None:
+        if not interactive:
+            raise AmacrinError(
+                "No archive slug configured",
+                hint="Run `amacrin init`, pass --slug, or add `slug:` to amacrin.yaml",
+            )
+        proposed = slugify(name)
+        resolved_slug = typer.prompt(
+            "Subdomain slug (<slug>.amacr.in)", default=proposed or None, err=True
+        )
+        prompted = True
+
+    return CreateInputs(
+        name=name,
+        auth=server_cfg.get("auth"),
+        slug=validate_archive_slug(resolved_slug),
+        org=org or (manifest.org if manifest else None),
+        prompted_slug=prompted,
+    )
+
+
+def _offer_to_save(ui: UI, *, interactive: bool) -> bool:
+    """Ask whether to persist an interactively-entered slug to amacrin.yaml."""
+    if not interactive:
+        return False
+    return typer.confirm("Save deploy settings to amacrin.yaml?", default=True)
 
 
 def _resolve_org_id(client: AmacrinClient, *, org: str | None) -> str:

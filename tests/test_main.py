@@ -314,6 +314,46 @@ class TestArchiveCreate:
         # archive-id persisted
         assert read_state("archive-id", project_dir=tmp_path) == "arch_1"
 
+    def test_interactively_picked_org_is_persisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving deploy settings must capture the org chosen in the picker."""
+        from types import SimpleNamespace
+
+        monkeypatch.chdir(tmp_path)  # no amacrin.yaml → slug is prompted
+        client = MagicMock()
+        client.me.return_value = _me(
+            {"id": "org_1", "name": "Personal", "role": "owner", "created_at": "x"},
+            {"id": "org_2", "name": "Lab", "role": "member", "created_at": "x"},
+        )
+        client.create_archive.return_value = ArchiveCreated(
+            archive=_archive(), deployment=_deployment(status="pending")
+        )
+        client.wait_for_deployment.return_value = _deployment(status="succeeded")
+
+        cfg = {"name": "My Archive", "auth": None}
+        with (
+            self._patch_config(cfg),
+            patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
+            # CliRunner swaps sys.stdin during invoke, so patch the module's
+            # `sys` name (used only for stdin.isatty) rather than the stream.
+            patch(
+                "amacrin.cli._archive_commands.sys",
+                SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+            ),
+        ):
+            # prompts in order: slug, org picker choice, save confirm
+            result = runner.invoke(
+                app, ["archive", "create"], input="my-archive\n2\ny\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        org_id, _ = client.create_archive.call_args.args
+        assert org_id == "org_2"
+        saved = yaml.safe_load((tmp_path / "amacrin.yaml").read_text())
+        assert saved["slug"] == "my-archive"
+        assert saved["org"] == "org_2"  # the picked org, not None
+
     def test_json_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         self._write_manifest(tmp_path)

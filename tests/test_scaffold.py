@@ -33,6 +33,16 @@ class TestRender:
         data = yaml.safe_load(render_amacrin_yaml("my-lab"))
         assert "org" not in data  # only a comment, not a real key
 
+    def test_name_with_quotes_and_backslashes_round_trips(self) -> None:
+        # user-entered names are arbitrary text — rendering must escape them
+        for name in ('My Lab\'s "Archive"', "back\\slash", 'trailing "', "café"):
+            data = yaml.safe_load(render_osa_yaml(name))
+            assert data["name"] == name
+
+    def test_org_with_quotes_round_trips(self) -> None:
+        data = yaml.safe_load(render_amacrin_yaml("my-lab", 'org"quote'))
+        assert data["org"] == 'org"quote'
+
 
 class TestWriteProjectFiles:
     def test_writes_three_files(self, tmp_path: Path) -> None:

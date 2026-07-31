@@ -1,12 +1,14 @@
 """Project scaffolding for ``amacrin init``.
 
-Renders the two project files as strings (pure, unit-testable) and writes them
-without clobbering existing files. ``osa.yaml`` is pure OSA-server config;
+Renders the three project files (``osa.yaml``, ``amacrin.yaml``,
+``.env.example``) as strings (pure, unit-testable) and writes them without
+clobbering existing files. ``osa.yaml`` is pure OSA-server config;
 ``amacrin.yaml`` is the deploy manifest that owns the archive slug.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,12 +26,22 @@ class ScaffoldedFile:
     written: bool
 
 
+def _yaml_str(value: str) -> str:
+    """A YAML double-quoted scalar with proper escaping.
+
+    JSON string syntax is a subset of YAML's double-quoted style, so
+    ``json.dumps`` gives a scalar that round-trips through ``yaml.safe_load``
+    even when the value contains quotes or backslashes.
+    """
+    return json.dumps(value)
+
+
 def render_osa_yaml(name: str) -> str:
     """The OSA server config — no slug or cloud settings (those live in the
     deploy manifest). ``domain``/``base_url`` come from the environment per
     deployment (localhost locally, ``{slug}.amacr.in`` in the cloud)."""
     return (
-        f'name: "{name}"\n'
+        f"name: {_yaml_str(name)}\n"
         "\n"
         "auth:\n"
         '  base_role: "DEPOSITOR"\n'
@@ -51,10 +63,10 @@ def render_amacrin_yaml(slug: str, org: str | None = None) -> str:
         "# The OSA server never reads this; its own config is osa.yaml.",
         "",
         f'slug: "{slug}"        # your archive is served at {slug}.amacr.in',
-        f"config: {OSA_CONFIG_FILENAME}      # the server config to ship",
+        f"config: {OSA_CONFIG_FILENAME}      # server config used by `amacrin archive create`",
     ]
     if org:
-        lines.append(f'org: "{org}"')
+        lines.append(f"org: {_yaml_str(org)}")
     else:
         lines.append('# org: "<org-id>"   # optional; omit to use your Personal org')
     return "\n".join(lines) + "\n"

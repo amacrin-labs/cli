@@ -1,8 +1,9 @@
 """`amacrin init` — scaffold a new archive project.
 
-Writes ``osa.yaml`` (server config) and ``amacrin.yaml`` (deploy manifest, which
-owns the slug) into the current directory. Interactive by default; fully driven
-by ``--name``/``--slug`` for non-interactive/CI use.
+Writes ``osa.yaml`` (server config), ``amacrin.yaml`` (deploy manifest, which
+owns the slug), and ``.env.example`` (secret placeholders) into the current
+directory. Interactive by default; fully driven by ``--name``/``--slug`` for
+non-interactive/CI use.
 """
 
 from __future__ import annotations

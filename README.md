@@ -30,9 +30,10 @@ paste tokens by hand.
 amacrin init
 ```
 
-`init` scaffolds two files. **`osa.yaml`** is your OSA server's own config — it
-runs identically locally, self-hosted, or in the cloud, so it carries no cloud
-settings:
+`init` scaffolds three files: `osa.yaml`, `amacrin.yaml`, and a `.env.example`
+listing the secret placeholders to copy into `.env`. **`osa.yaml`** is your OSA
+server's own config — it runs identically locally, self-hosted, or in the
+cloud, so it carries no cloud settings:
 
 ```yaml
 name: My Lab Archive
@@ -48,11 +49,12 @@ auth:
 
 **`amacrin.yaml`** is the deploy manifest — how Amacrin provisions the archive.
 It owns the `slug` (the `<slug>.amacr.in` subdomain) and points at the server
-config to ship. The OSA server never reads this file:
+config that `amacrin archive create` provisions with. The OSA server never
+reads this file:
 
 ```yaml
 slug: my-lab          # your archive is served at my-lab.amacr.in
-config: osa.yaml      # the server config to ship
+config: osa.yaml      # server config used by `amacrin archive create`
 ```
 
 `${VAR}` references in either file are resolved from a local `.env` and the

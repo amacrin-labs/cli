@@ -33,7 +33,9 @@ class DeployManifest(BaseModel):
 
     slug: str
     org: str | None = None
-    config: Path = Path("osa.yaml")  # the server config (osa.yaml) to ship
+    # The server config `amacrin archive create` provisions with; deploy-time
+    # convention builds don't read it.
+    config: Path = Path("osa.yaml")
 
 
 def load_deploy_manifest(

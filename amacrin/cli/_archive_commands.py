@@ -25,7 +25,11 @@ archive_app = typer.Typer(help="Manage Amacrin archives (the cloud resource).")
 def archive_create(
     ctx: typer.Context,
     config: Annotated[
-        Optional[Path], typer.Option(help="Path to osa.yaml (defaults to ./osa.yaml).")
+        Optional[Path],
+        typer.Option(
+            help="Server config to ship (default: `config:` from amacrin.yaml, "
+            "else ./osa.yaml)."
+        ),
     ] = None,
     slug: Annotated[
         Optional[str],
@@ -55,15 +59,16 @@ def archive_create(
     deployment: Deployment
     try:
         # Resolve inputs (may prompt) *before* opening any task/spinner — the UI
-        # forbids interactive prompts while a task is live.
+        # forbids interactive prompts while a task is live. Org resolution comes
+        # before the save offer so an interactively-picked org is persisted too.
         inputs = _resolve_create_inputs(
             cwd, config=config, slug=slug, org=org, interactive=interactive, ui=ui
         )
+        org_id = _resolve_org_id(client, org=inputs.org)
         if inputs.prompted_slug and _offer_to_save(ui, interactive=interactive):
-            saved = save_manifest(cwd, slug=inputs.slug, org=inputs.org)
+            saved = save_manifest(cwd, slug=inputs.slug, org=org_id)
             if saved.written and not json_output:
                 ui.info(f"Wrote {saved.path.name}")
-        org_id = _resolve_org_id(client, org=inputs.org)
         created = client.create_archive(
             org_id, {"name": inputs.name, "slug": inputs.slug, "auth": inputs.auth}
         )
@@ -116,7 +121,9 @@ def _resolve_create_inputs(
     config) into the create payload, prompting for a slug only when neither a
     manifest nor ``--slug`` supplied one.
 
-    Precedence for slug/org: explicit flag > ``amacrin.yaml`` > interactive prompt.
+    Slug precedence: explicit flag > ``amacrin.yaml`` > interactive prompt.
+    Org here is flag > ``amacrin.yaml`` only — when both are absent it stays
+    ``None`` and `_resolve_org_id` picks (sole org, tty picker, or Personal).
     """
     manifest = load_deploy_manifest(project_dir)
     server_cfg = load_config(
@@ -158,7 +165,7 @@ def _resolve_create_inputs(
 
 
 def _offer_to_save(ui: UI, *, interactive: bool) -> bool:
-    """Ask whether to persist an interactively-entered slug to amacrin.yaml."""
+    """Ask whether to persist the entered slug (and resolved org) to amacrin.yaml."""
     if not interactive:
         return False
     return typer.confirm("Save deploy settings to amacrin.yaml?", default=True)

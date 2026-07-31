@@ -266,6 +266,30 @@ class AmacrinClient:
         )
         return Deployment.model_validate(resp.json())
 
+    def trigger_ingestion(
+        self,
+        archive_id: str,
+        convention: str,
+        *,
+        batch_size: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Trigger an ingestion run through the cloud broker.
+
+        The cloud authorizes us as the archive owner, mints a scoped
+        `ingestions:write` token for the tenant, and forwards the trigger — so
+        the CLI never holds or sends a tenant credential. Returns the created
+        run record verbatim from the tenant.
+        """
+        payload: dict[str, Any] = {"convention": convention}
+        if batch_size is not None:
+            payload["batch_size"] = batch_size
+        if limit is not None:
+            payload["limit"] = limit
+        return self._request(
+            "POST", f"/archives/{archive_id}/ingestions", json=payload
+        ).json()
+
     # -- server-side convention build/deploy --------------------------------
 
     def submit_build(

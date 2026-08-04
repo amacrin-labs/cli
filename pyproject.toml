@@ -1,6 +1,6 @@
 [project]
 name = "amacrin"
-version = "0.0.1"
+version = "0.0.2"
 description = "Amacrin CLI — deploy and manage OSA archives on the Amacrin cloud platform"
 readme = "README.md"
 license = "Apache-2.0"

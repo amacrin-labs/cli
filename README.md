@@ -26,12 +26,17 @@ paste tokens by hand.
 
 ### 2. Describe your archive
 
-Create an `osa.yaml` in your project. A minimal example with ORCID sign-in and
-one admin:
+```bash
+amacrin init
+```
+
+`init` scaffolds three files: `osa.yaml`, `amacrin.yaml`, and a `.env.example`
+listing the secret placeholders to copy into `.env`. **`osa.yaml`** is your OSA
+server's own config — it runs identically locally, self-hosted, or in the
+cloud, so it carries no cloud settings:
 
 ```yaml
 name: My Lab Archive
-slug: my-lab
 auth:
   providers:
     orcid:
@@ -42,16 +47,24 @@ auth:
       - "0000-0002-1234-5678"
 ```
 
-`${VAR}` references are resolved from a local `.env` file and the environment
-(the environment wins), so secrets stay out of the file:
+**`amacrin.yaml`** is the deploy manifest — how Amacrin provisions the archive.
+It owns the `slug` (the `<slug>.amacr.in` subdomain) and points at the server
+config that `amacrin archive create` provisions with. The OSA server never
+reads this file:
+
+```yaml
+slug: my-lab          # your archive is served at my-lab.amacr.in
+config: osa.yaml      # server config used by `amacrin archive create`
+```
+
+`${VAR}` references in either file are resolved from a local `.env` and the
+environment (the environment wins), so secrets stay out of the files:
 
 ```bash
 # .env
 ORCID_CLIENT_ID=APP-XXXXXXXX
 ORCID_CLIENT_SECRET=super-secret
 ```
-
-The archive is reachable at `https://<slug>.amacr.in`.
 
 ### 3. Provision it
 
@@ -86,6 +99,7 @@ Starts an ingestion run for a convention, identified by its slug — shown by
 
 | Command | What it does |
 | --- | --- |
+| `amacrin init` | Scaffold `osa.yaml` (server config) + `amacrin.yaml` (deploy manifest). |
 | `amacrin login` | Sign in via the browser (creates your account + Personal org on first use). |
 | `amacrin logout` | Revoke and remove stored credentials. |
 | `amacrin whoami` | Show the signed-in user and organisations. |

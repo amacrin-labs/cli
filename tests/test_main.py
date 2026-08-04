@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from amacrin.cli.main import app
@@ -271,13 +273,19 @@ class TestOrg:
 
 
 class TestArchiveCreate:
-    def _patch_config(self, cfg: dict[str, object]):
-        return patch("amacrin.config.load_config", return_value=cfg, create=True)
+    def _patch_config(self, cfg: Mapping[str, object]):
+        # load_config is imported into the command module — patch it there.
+        return patch("amacrin.cli._archive_commands.load_config", return_value=cfg)
 
-    def test_single_org_autoselect_and_polls_success(
+    @staticmethod
+    def _write_manifest(tmp_path: Path, body: str = "slug: my-archive\n") -> None:
+        (tmp_path / "amacrin.yaml").write_text(body)
+
+    def test_declarative_manifest_create(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        self._write_manifest(tmp_path)  # slug lives in amacrin.yaml
         client = MagicMock()
         client.me.return_value = _me()
         created = ArchiveCreated(
@@ -286,7 +294,7 @@ class TestArchiveCreate:
         client.create_archive.return_value = created
         client.wait_for_deployment.return_value = _deployment(status="succeeded")
 
-        cfg = {"name": "My Archive", "slug": "my-archive", "auth": {"mode": "open"}}
+        cfg = {"name": "My Archive", "auth": {"mode": "open"}}  # osa.yaml: no slug
         with (
             self._patch_config(cfg),
             patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
@@ -297,7 +305,7 @@ class TestArchiveCreate:
         # org auto-resolved to the single org
         org_id, payload = client.create_archive.call_args.args
         assert org_id == "org_1"
-        # only name/slug/auth are forwarded
+        # name/auth from osa.yaml, slug from amacrin.yaml
         assert payload == {
             "name": "My Archive",
             "slug": "my-archive",
@@ -306,8 +314,49 @@ class TestArchiveCreate:
         # archive-id persisted
         assert read_state("archive-id", project_dir=tmp_path) == "arch_1"
 
+    def test_interactively_picked_org_is_persisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving deploy settings must capture the org chosen in the picker."""
+        from types import SimpleNamespace
+
+        monkeypatch.chdir(tmp_path)  # no amacrin.yaml → slug is prompted
+        client = MagicMock()
+        client.me.return_value = _me(
+            {"id": "org_1", "name": "Personal", "role": "owner", "created_at": "x"},
+            {"id": "org_2", "name": "Lab", "role": "member", "created_at": "x"},
+        )
+        client.create_archive.return_value = ArchiveCreated(
+            archive=_archive(), deployment=_deployment(status="pending")
+        )
+        client.wait_for_deployment.return_value = _deployment(status="succeeded")
+
+        cfg = {"name": "My Archive", "auth": None}
+        with (
+            self._patch_config(cfg),
+            patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
+            # CliRunner swaps sys.stdin during invoke, so patch the module's
+            # `sys` name (used only for stdin.isatty) rather than the stream.
+            patch(
+                "amacrin.cli._archive_commands.sys",
+                SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+            ),
+        ):
+            # prompts in order: slug, org picker choice, save confirm
+            result = runner.invoke(
+                app, ["archive", "create"], input="my-archive\n2\ny\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        org_id, _ = client.create_archive.call_args.args
+        assert org_id == "org_2"
+        saved = yaml.safe_load((tmp_path / "amacrin.yaml").read_text())
+        assert saved["slug"] == "my-archive"
+        assert saved["org"] == "org_2"  # the picked org, not None
+
     def test_json_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
+        self._write_manifest(tmp_path)
         client = MagicMock()
         client.me.return_value = _me()
         client.create_archive.return_value = ArchiveCreated(
@@ -315,7 +364,7 @@ class TestArchiveCreate:
         )
         client.wait_for_deployment.return_value = _deployment(status="succeeded")
 
-        cfg = {"name": "My Archive", "slug": "my-archive", "auth": None}
+        cfg = {"name": "My Archive", "auth": None}
         with (
             self._patch_config(cfg),
             patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
@@ -327,33 +376,58 @@ class TestArchiveCreate:
         assert payload["archive"]["slug"] == "my-archive"
         assert payload["deployment"]["status"] == "succeeded"
 
-    def test_missing_slug_errors(
+    def test_slug_flag_overrides_manifest(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        self._write_manifest(tmp_path, "slug: from-manifest\n")
         client = MagicMock()
-        cfg = {"name": "My Archive"}  # no slug
+        client.me.return_value = _me()
+        client.create_archive.return_value = ArchiveCreated(
+            archive=_archive(), deployment=_deployment(status="pending")
+        )
+        client.wait_for_deployment.return_value = _deployment(status="succeeded")
+
+        cfg = {"name": "My Archive", "auth": None}
+        with (
+            self._patch_config(cfg),
+            patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
+        ):
+            result = runner.invoke(app, ["archive", "create", "--slug", "from-flag"])
+
+        assert result.exit_code == 0, result.output
+        _, payload = client.create_archive.call_args.args
+        assert payload["slug"] == "from-flag"
+
+    def test_no_slug_non_interactive_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No amacrin.yaml, no --slug, and CliRunner stdin is not a TTY.
+        monkeypatch.chdir(tmp_path)
+        client = MagicMock()
+        cfg = {"name": "My Archive"}
         with (
             self._patch_config(cfg),
             patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
         ):
             result = runner.invoke(app, ["archive", "create"])
         assert result.exit_code == 1
-        assert "slug" in result.output
+        assert "slug" in result.output.lower()
         client.create_archive.assert_not_called()
 
     def test_slug_taken_shows_clean_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        self._write_manifest(tmp_path)
         client = MagicMock()
         client.me.return_value = _me()
         client.create_archive.side_effect = AmacrinError(
             "'my-archive' is taken — pick another slug",
-            hint="Change `slug` in osa.yaml and re-run",
+            hint="Change `slug` in amacrin.yaml and re-run",
             status=409,
         )
-        cfg = {"name": "My Archive", "slug": "my-archive", "auth": None}
+        cfg = {"name": "My Archive", "auth": None}
         with (
             self._patch_config(cfg),
             patch("amacrin.cli._archive_commands.AmacrinClient", return_value=client),
@@ -362,6 +436,46 @@ class TestArchiveCreate:
         assert result.exit_code == 1
         assert "is taken" in result.output
         assert "Traceback" not in result.output
+
+
+class TestInit:
+    def test_scaffolds_files_with_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["init", "--name", "My Lab", "--slug", "my-lab"])
+        assert result.exit_code == 0, result.output
+        osa = yaml.safe_load((tmp_path / "osa.yaml").read_text())
+        manifest = yaml.safe_load((tmp_path / "amacrin.yaml").read_text())
+        assert osa["name"] == "My Lab"
+        assert "slug" not in osa  # server config stays slug-free
+        assert manifest["slug"] == "my-lab"
+        assert (tmp_path / ".env.example").exists()
+
+    def test_derives_slug_from_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["init", "--name", "My Lab Archive"])
+        assert result.exit_code == 0, result.output
+        manifest = yaml.safe_load((tmp_path / "amacrin.yaml").read_text())
+        assert manifest["slug"] == "my-lab-archive"
+
+    def test_no_clobber(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "osa.yaml").write_text("keep me")
+        result = runner.invoke(app, ["init", "--name", "X", "--slug", "x"])
+        assert result.exit_code == 0
+        assert (tmp_path / "osa.yaml").read_text() == "keep me"
+        assert (tmp_path / "amacrin.yaml").exists()  # the other file is still written
+
+    def test_invalid_slug_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["init", "--name", "X", "--slug", "Bad Slug"])
+        assert result.exit_code == 1
+        assert "slug" in result.output.lower()
 
 
 class TestArchiveList:

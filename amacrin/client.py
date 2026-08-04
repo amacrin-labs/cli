@@ -242,7 +242,7 @@ class AmacrinClient:
                 raise AmacrinError(
                     f"'{slug}' is taken — pick another slug",
                     cause=exc.cause,
-                    hint="Change `slug` in osa.yaml and re-run",
+                    hint="Change `slug` in amacrin.yaml (or pass --slug) and re-run",
                     request_id=exc.request_id,
                 ) from None
             raise

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from amacrin.auth import login_with_token, run_login_flow
 from amacrin.cli._archive_commands import archive_app
 from amacrin.cli._ingest_commands import ingest_app
+from amacrin.cli._init_commands import init
 from amacrin.cli._org_commands import org_app
 from amacrin.cli.ui import UI
 from amacrin.client import AmacrinClient, resolve_api_base
@@ -25,6 +26,7 @@ from amacrin.config import AmacrinError
 from amacrin.credentials import remove_credentials
 
 app = typer.Typer(help="Amacrin — deploy and manage OSA archives in the cloud.")
+app.command()(init)
 app.add_typer(org_app, name="org")
 app.add_typer(archive_app, name="archive")
 app.add_typer(ingest_app, name="ingest")

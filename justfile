@@ -35,3 +35,27 @@ clean:
 # Install in development mode
 dev:
     uv sync
+
+# Bump version and cut a GitHub release (triggers PyPI publish): just release patch|minor|major
+release bump: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Working tree is dirty — commit or stash first."; exit 1
+    fi
+    old=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    IFS='.' read -r major minor patch <<< "$old"
+    case "{{ bump }}" in
+        patch) patch=$((patch + 1)) ;;
+        minor) minor=$((minor + 1)); patch=0 ;;
+        major) major=$((major + 1)); minor=0; patch=0 ;;
+        *) echo "Usage: just release patch|minor|major"; exit 1 ;;
+    esac
+    new="${major}.${minor}.${patch}"
+    sed -i '' "s/^version = \"${old}\"/version = \"${new}\"/" pyproject.toml
+    uv lock
+    git add pyproject.toml uv.lock
+    git commit -m "chore: bump version from ${old} to ${new}"
+    git tag "v${new}"
+    git push && git push --tags
+    gh release create "v${new}" --title "v${new}" --generate-notes

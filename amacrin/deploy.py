@@ -92,6 +92,16 @@ def _local_deploy(
     )
 
 
+def _verbose(ui: UI, text: str) -> None:
+    """Emit a dim trace line, only under --verbose.
+
+    Announce each silent stage *before* it runs — a deploy that stalls then
+    shows exactly which stage it is stuck in.
+    """
+    if ui.verbose:
+        ui.detail(text)
+
+
 def _cloud_deploy(
     client: AmacrinClient, *, project_dir: Path, ui: UI
 ) -> dict[str, Any]:
@@ -99,7 +109,9 @@ def _cloud_deploy(
     from amacrin.manifest import build_cloud_manifests, build_source_tarball
 
     archive_id = require_archive_id(project_dir=project_dir)
+    _verbose(ui, f"checking archive {archive_id}")
     archive = client.archive(archive_id)
+    _verbose(ui, f"archive status: {archive.status}")
     if archive.status != "running":
         raise AmacrinError(
             f"Archive is not running (status: {archive.status})",
@@ -108,8 +120,14 @@ def _cloud_deploy(
 
     # Manifests first — the docs gate and slug validation fail fast, before we
     # spend time tarring the source or hit the network.
+    _verbose(ui, "resolving conventions via `osa manifest` (project env)")
     manifests = build_cloud_manifests(project_dir)
+    _verbose(
+        ui, f"{len(manifests)} convention(s): " + ", ".join(t for t, _ in manifests)
+    )
+    _verbose(ui, "packing source tarball")
     tarball = build_source_tarball(project_dir)
+    _verbose(ui, f"source tarball: {len(tarball) / 1e6:.1f} MB")
 
     builds = [
         _build_and_publish(client, archive_id, title, manifest, tarball, ui)
@@ -131,6 +149,7 @@ def _build_and_publish(
     suffix = " + ingester" if manifest.get("ingester") is not None else ""
     ui.info(f"Deploying '{title}' — {n_hooks} hook(s){suffix}")
 
+    _verbose(ui, f"uploading {len(tarball) / 1e6:.1f} MB source + manifest")
     submitted = client.submit_build(archive_id, manifest, tarball)
     ui.info(f"  build {submitted.build_id} submitted")
 

@@ -33,6 +33,7 @@ from amacrin.config import AmacrinError
 # 100 MB upload lean and avoids shipping local secrets/venvs.
 _TARBALL_EXCLUDES = {
     ".git",
+    ".data",  # local OSA server datastore — ingest artifacts run to GBs
     ".venv",
     "venv",
     "__pycache__",

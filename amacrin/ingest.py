@@ -1,8 +1,9 @@
 """Amacrin ingest orchestration.
 
-Resolves the linked archive, then delegates to `osa.cli.ingestion` to start an
-ingestion run for a convention, identified by its slug (shown by
-`amacrin deploy` when conventions are registered).
+Triggers an ingestion run through the cloud control plane. The cloud brokers to
+the archive's tenant instance with a scoped, short-lived token — the CLI never
+holds a tenant credential (a platform token is not, and must not be, a tenant
+credential). Status is polled through the read-proxy (`amacrin ingest status`).
 """
 
 from __future__ import annotations
@@ -12,8 +13,7 @@ from typing import Any
 
 from amacrin import credentials
 from amacrin.client import AmacrinClient
-from amacrin.config import AmacrinError
-from amacrin.deploy import resolve_archive_url
+from amacrin.config import AmacrinError, require_archive_id
 
 
 def start_ingest(
@@ -27,26 +27,19 @@ def start_ingest(
 ) -> dict[str, Any]:
     """Start an ingestion run for a convention on the linked archive.
 
-    Resolves the archive URL (errors if no archive is linked or ready), then
-    delegates to osa's ingestion with the convention slug.
+    Resolves the linked archive id, then triggers the run through the cloud
+    broker (``POST /archives/{id}/ingestions``). Errors — a missing archive, an
+    unreachable tenant (502), a bad convention (400), or a denial (403) —
+    surface as ``AmacrinError`` from the client with the API's message.
     """
-    from osa.cli.ingestion import IngestionError, start_ingestion
-
     client = AmacrinClient(api_base, cred_path=cred_path or credentials._DEFAULT_PATH)
-    archive_url = resolve_archive_url(client, project_dir=project_dir)
-    # osa cannot refresh mid-flight, so hand it a verified-fresh access token.
-    token = client.fresh_access_token()
-
+    archive_id = require_archive_id(project_dir=project_dir)
     try:
-        return start_ingestion(
-            server=archive_url,
-            convention_id=convention,
-            token=token,
-            batch_size=batch_size,
-            limit=limit,
+        return client.trigger_ingestion(
+            archive_id, convention, batch_size=batch_size, limit=limit
         )
-    except IngestionError as e:
-        raise AmacrinError(
-            str(e),
-            hint="Check `amacrin archive status` and try again",
-        ) from e
+    except AmacrinError as e:
+        # Preserve the API's message/cause; add a triage hint if none was set.
+        if e.hint is None:
+            e.hint = "Check `amacrin archive status`, then try again"
+        raise

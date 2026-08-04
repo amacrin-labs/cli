@@ -69,6 +69,22 @@ def test_tarball_includes_source_and_excludes_junk(tmp_path: Path) -> None:
     assert not any(n.endswith(".pyc") for n in names)
 
 
+def test_tarball_excludes_local_datastore(tmp_path: Path) -> None:
+    # `.data/` is the local OSA server datastore (ingest artifacts, GBs) —
+    # never part of the buildable source.
+    (tmp_path / "conv.py").write_text("x = 1\n")
+    ingest = tmp_path / ".data" / "data" / "ingests" / "run-1"
+    ingest.mkdir(parents=True)
+    (ingest / "structure.cif").write_text("atoms")
+
+    data = build_source_tarball(tmp_path)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        names = set(tar.getnames())
+
+    assert "conv.py" in names
+    assert not any(n.startswith(".data") for n in names)
+
+
 # ---- build_cloud_manifests (osa manifest via subprocess, stubbed) ---------
 
 # A release-less `osa manifest` payload — the shape `osa manifest` emits.

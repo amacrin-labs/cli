@@ -177,9 +177,16 @@ def test_raise_if_failed_cancelled() -> None:
 
 
 class _FakeUI:
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose = verbose
+        self.details: list[str] = []
+
     def info(self, *_: object) -> None: ...
     def success(self, *_: object) -> None: ...
     def error(self, *_: object, **__: object) -> None: ...
+
+    def detail(self, text: str) -> None:
+        self.details.append(text)
 
 
 class _FakeArchive:
@@ -226,3 +233,38 @@ def test_cloud_deploy_rejects_archive_not_running(monkeypatch, tmp_path: Path) -
     client = _FakeClient("deploying", _build("published"))
     with pytest.raises(AmacrinError, match="not running"):
         deploy_mod._cloud_deploy(client, project_dir=tmp_path, ui=_FakeUI())
+
+
+def _patch_cloud_steps(monkeypatch, tarball: bytes = b"TAR") -> None:
+    monkeypatch.setattr(deploy_mod, "require_archive_id", lambda **_: "arch_1")
+    monkeypatch.setattr(
+        "amacrin.manifest.build_cloud_manifests",
+        lambda _p: [("Proteins", {"slug": "proteins", "hooks": [{"name": "detect"}]})],
+    )
+    monkeypatch.setattr("amacrin.manifest.build_source_tarball", lambda _p: tarball)
+
+
+def test_cloud_deploy_verbose_traces_each_step(monkeypatch, tmp_path: Path) -> None:
+    _patch_cloud_steps(monkeypatch, tarball=b"x" * 2_500_000)
+    client = _FakeClient("running", _build("published", convention_ref="proteins"))
+    ui = _FakeUI(verbose=True)
+
+    deploy_mod._cloud_deploy(client, project_dir=tmp_path, ui=ui)
+
+    joined = "\n".join(ui.details)
+    # Every silent stage is announced *before* it runs, so a stall is visible.
+    assert "arch_1" in joined
+    assert "osa manifest" in joined
+    assert "packing source" in joined.lower()
+    assert "2.5 MB" in joined  # tarball size, the .data-hang tell
+    assert "uploading" in joined.lower()
+
+
+def test_cloud_deploy_quiet_without_verbose(monkeypatch, tmp_path: Path) -> None:
+    _patch_cloud_steps(monkeypatch)
+    client = _FakeClient("running", _build("published", convention_ref="proteins"))
+    ui = _FakeUI(verbose=False)
+
+    deploy_mod._cloud_deploy(client, project_dir=tmp_path, ui=ui)
+
+    assert ui.details == []
